@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "build:win": "bun build ./backup-factorio.js --compile --target=bun-windows-x64 --outfile=dist/factorio-backup-win",
+    "build:linux": "bun build ./backup-factorio.js --compile --target=bun-linux-x64 --outfile=dist/factorio-backup-linux"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.2.0"
+  }
+}
