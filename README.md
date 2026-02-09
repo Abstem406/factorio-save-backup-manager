@@ -1,6 +1,6 @@
 # Factorio Backup Manager 🚀
 
-A robust, interactive CLI tool built with **Bun** to automatically monitor and backup your Factorio saves to the cloud.
+A interactive CLI tool created with **Bun** to monitor and automatically back up your Factorio save files to the cloud.
 
 ## ✨ Features
 
@@ -61,4 +61,4 @@ The output will be generated in the `dist/` directory.
 - `services/`: Specific logic for Rootz, Buzzheavier, and Discord.
 
 ---
-*Factory must grow, but backups must be safe.*
+*Factory must grow, but backups must be safe.* xDDDD
