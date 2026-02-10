@@ -4,6 +4,7 @@ import { promises as fs, statSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getSavePath, loadConfig, saveConfig, runInteractiveSetup } from './config-manager.js';
+import { select } from '@inquirer/prompts';
 
 // Explicit imports
 import { upload as uploadToBuzzheavier } from './services/buzzheavier.js';
@@ -26,13 +27,17 @@ class FactorioBackup {
         this.config = config;
         this.savePath = getSavePath();
         this.lastHash = null;
+        this.startTime = Date.now();
     }
 
     async getLatestSave() {
         const saveDir = this.savePath;
         try {
             const files = await fs.readdir(saveDir);
-            const saveFiles = files.filter(f => f.endsWith('.zip')).sort((a, b) => {
+            const saveFiles = files.filter(f => f.endsWith('.zip')).filter(f => {
+                const mtime = statSync(path.join(saveDir, f)).mtime.getTime();
+                return mtime >= this.startTime;
+            }).sort((a, b) => {
                 return statSync(path.join(saveDir, b)).mtime.getTime() -
                     statSync(path.join(saveDir, a)).mtime.getTime();
             });
@@ -132,6 +137,7 @@ class FactorioBackup {
             console.log(`Save path: ${this.savePath}`);
             console.log(`Check interval: ${this.config.checkInterval} minutes`);
             console.log('Press "ENTER" to force a check immediately.');
+            console.log('Press "u" to select a file manually for upload.');
             console.log('Press "c" to reconfigure settings.');
             console.log('-------------------------------');
 
@@ -140,7 +146,7 @@ class FactorioBackup {
             }, intervalMs);
         };
 
-        process.stdin.on('data', async (data) => {
+        const handleInput = async (data) => {
             if (this.isReconfiguring) return;
 
             const key = data.toString().trim().toLowerCase();
@@ -148,6 +154,12 @@ class FactorioBackup {
             if (key === '') { // Enter
                 console.log('Forcing manual check...');
                 await this.checkForChanges();
+            } else if (key === 'u') {
+                this.isReconfiguring = true;
+                await this.manualUpload();
+                this.isReconfiguring = false;
+                process.stdin.resume();
+                startMonitoring();
             } else if (key === 'c') {
                 this.isReconfiguring = true;
                 console.log('\nStopping monitor for reconfiguration...');
@@ -166,10 +178,57 @@ class FactorioBackup {
                 process.stdin.resume(); // Essential: reactivation for Bun after Inquirer
                 startMonitoring();
             }
-        });
+        };
+
+        process.stdin.on('data', handleInput);
 
         // Start first loop
         startMonitoring();
+    }
+
+    async manualUpload() {
+        console.log('\n--- Manual Upload Menu ---');
+        try {
+            const files = await fs.readdir(this.savePath);
+            const saveFiles = files.filter(f => f.endsWith('.zip')).sort((a, b) => {
+                return statSync(path.join(this.savePath, b)).mtime.getTime() -
+                    statSync(path.join(this.savePath, a)).mtime.getTime();
+            });
+
+            if (saveFiles.length === 0) {
+                console.log('No save files found in the directory.');
+                return;
+            }
+
+            const choices = saveFiles.map(f => ({
+                name: `${f} (${(statSync(path.join(this.savePath, f)).size / 1024 / 1024).toFixed(2)} MB)`,
+                value: f
+            }));
+
+            choices.push({ name: 'Cancel', value: 'cancel' });
+
+            const selectedFile = await select({
+                message: 'Select a file to upload:',
+                choices: choices
+            });
+
+            if (selectedFile !== 'cancel') {
+                const filePath = path.join(this.savePath, selectedFile);
+
+                const downloadUrl = await this.uploadToCloud(filePath, selectedFile);
+
+                if (downloadUrl && this.config.discordWebhook) {
+                    await sendNotification(
+                        this.config.discordWebhook,
+                        selectedFile,
+                        downloadUrl,
+                        this.config.cloudService.charAt(0).toUpperCase() + this.config.cloudService.slice(1)
+                    );
+                }
+            }
+        } catch (error) {
+            console.error('Error listing files for manual upload:', error.message);
+        }
     }
 }
 

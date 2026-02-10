@@ -96,7 +96,7 @@ export async function runInteractiveSetup() {
     // 3. Configure Interval
     const checkInterval = await number({
         message: 'Enter check interval in minutes:',
-        default: 6,
+        default: 3,
         validate: (value) => (value && value > 0) ? true : 'Please enter a valid number greater than 0.'
     });
 

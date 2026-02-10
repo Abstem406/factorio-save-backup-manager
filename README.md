@@ -53,6 +53,12 @@ bun run build:win
 # Build for Linux
 bun run build:linux
 ```
+> [!NOTE]
+> **Custom Icon**: To compile the Windows version with a custom icon, you must run the build command on a Windows machine due to a Bun limitation:
+> ```bash
+> bun run build:win:icon
+> ```
+
 The output will be generated in the `dist/` directory.
 
 ## 📁 Project Structure
