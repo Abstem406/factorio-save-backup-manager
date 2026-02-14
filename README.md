@@ -13,6 +13,7 @@ A interactive CLI tool created with **Bun** to monitor and automatically back up
 - **On-the-fly Control**:
   - Press `ENTER` to force an immediate check.
   - Press `c` to reconfigure settings without restarting.
+  - Press "u" to select a file manually for upload.
 - **Standalone Binaries**: No dependencies required to run.
 
 ## 📥 Download

@@ -48,3 +48,59 @@ export async function sendNotification(webhookUrl, fileName, downloadUrl, servic
         console.error('Error sending Discord notification:', error.message);
     }
 }
+
+export async function getLatestBackupUrl(botToken, channelId) {
+    if (!botToken || !channelId) {
+        throw new Error('Discord Bot Token and Channel ID are required for downloading.');
+    }
+
+    try {
+        const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=50`, {
+            headers: {
+                'Authorization': `Bot ${botToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch messages: ${response.status} ${await response.text()}`);
+        }
+
+        const messages = await response.json();
+
+        // Search for the latest message with a download link
+        for (const message of messages) {
+            // Check embeds first (as sent by this tool)
+            if (message.embeds && message.embeds.length > 0) {
+                for (const embed of message.embeds) {
+                    const downloadField = embed.fields?.find(f => f.name.includes('Download Link'));
+                    if (downloadField && downloadField.value) {
+                        // Extract URL from the field value (it might be wrapped in markdown)
+                        const urlMatch = downloadField.value.match(/https?:\/\/[^\s]+ /);
+                        const url = urlMatch ? urlMatch[0].trim() : downloadField.value.trim();
+                        return {
+                            url,
+                            fileName: embed.fields?.find(f => f.name.includes('Filename'))?.value.replace(/`/g, '') || 'latest_backup.zip',
+                            timestamp: message.timestamp
+                        };
+                    }
+                }
+            }
+
+            // Fallback: check message content if no embeds match
+            const contentMatch = message.content?.match(/https?:\/\/[^\s]+ /);
+            if (contentMatch) {
+                return {
+                    url: contentMatch[0].trim(),
+                    fileName: 'latest_backup.zip',
+                    timestamp: message.timestamp
+                };
+            }
+        }
+
+        throw new Error('No backup link found in the last 50 messages.');
+    } catch (error) {
+        console.error('Error fetching latest backup from Discord:', error.message);
+        throw error;
+    }
+}

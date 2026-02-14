@@ -54,65 +54,255 @@ export async function saveConfig(config) {
     }
 }
 
-export async function runInteractiveSetup() {
-    console.log('\n--- Factorio Backup Initial Setup ---');
+export async function runInteractiveSetup(currentConfig = null) {
+    const readline = await import('readline');
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
-    // 1. Select Service
-    const mode = await select({
-        message: 'Select Cloud Service:',
-        choices: [
-            { name: 'Rootz.so (Default, Anonymous)', value: 'rootz' },
-            { name: 'Buzzheavier (Anonymous)', value: 'buzzheavier_anon' },
-            { name: 'Buzzheavier (Authenticated)', value: 'buzzheavier_auth' }
-        ]
-    });
-
-    let cloudService = 'rootz';
-    let buzzheavierConfig = {};
-
-    if (mode === 'buzzheavier_anon') {
-        cloudService = 'buzzheavier';
-        buzzheavierConfig = {
-            anonymous: true
-        };
-    } else if (mode === 'buzzheavier_auth') {
-        cloudService = 'buzzheavier';
-        const accountId = await input({
-            message: 'Enter Buzzheavier Account ID:',
-            validate: (value) => value ? true : 'Account ID cannot be empty.'
-        });
-
-        const locationId = await input({
-            message: 'Enter Buzzheavier Location ID (Optional, press Enter to skip):',
-        });
-
-        buzzheavierConfig = {
-            accountId,
-            locationId: locationId || null,
-            anonymous: false
-        };
-    }
-
-    // 3. Configure Interval
-    const checkInterval = await number({
-        message: 'Enter check interval in minutes:',
-        default: 3,
-        validate: (value) => (value && value > 0) ? true : 'Please enter a valid number greater than 0.'
-    });
-
-    // 4. Discord Webhook (Optional)
-    const discordWebhook = await input({
-        message: 'Enter Discord Webhook URL (Optional, press Enter to skip):',
-    });
-
-    // Construct final config object
-    const config = {
-        cloudService,
-        checkInterval,
-        discordWebhook: discordWebhook || null,
-        buzzheavier: buzzheavierConfig,
+    let config = currentConfig || {
+        cloudService: 'rootz',
+        checkInterval: 5,
+        discordWebhook: null,
+        discordBotToken: null,
+        discordChannelId: null,
+        buzzheavier: { anonymous: true },
         rootz: {}
     };
 
-    return config;
+    const expanded = new Set();
+    let selectedIndex = 0;
+    let menuItems = [];
+
+    const render = () => {
+        process.stdout.write('\x1Bc'); // Clear screen
+        console.log(`┌───────────────────────────────────────────────────────────────┐`);
+        console.log(`│                 FACTORIO SETUP CONFIGURATION                  │`);
+        console.log(`├─────────────┬─────────────────────────────────────────────────┤`);
+        console.log(`│ Service     │ ${config.cloudService.toUpperCase().padEnd(47).substring(0, 47)} │`);
+        console.log(`│ Interval    │ ${(config.checkInterval + ' mins').padEnd(47).substring(0, 47)} │`);
+        console.log(`│ Webhook     │ ${(config.discordWebhook ? 'CONNECTED' : 'NOT SET').padEnd(47).substring(0, 47)} │`);
+        console.log(`│ Discord Bot │ ${(config.discordBotToken ? 'CONFIGURED' : 'NOT SET').padEnd(47).substring(0, 47)} │`);
+        console.log(`└─────────────┴─────────────────────────────────────────────────┘\n`);
+
+        menuItems = [];
+
+        // 🌐 Cloud Section
+        const isCloudExpanded = expanded.has('cloud');
+        menuItems.push({
+            name: `${isCloudExpanded ? '⬇' : '➡'} 🌐 Cloud Service (${config.cloudService.toUpperCase()})`,
+            type: 'toggle',
+            value: 'cloud'
+        });
+        if (isCloudExpanded) {
+            menuItems.push({ name: `  ├─⪢ ☁️ Select Service`, type: 'action', value: 'cloud_service' });
+            if (config.cloudService === 'buzzheavier') {
+                menuItems.push({
+                    name: `  └─ 👤 Buzzheavier Account: ${config.buzzheavier.anonymous ? 'Anonymous' : config.buzzheavier.accountId}`,
+                    type: 'action',
+                    value: 'buzz_account'
+                });
+            } else {
+                menuItems.push({ name: `  └─ ${config.cloudService.toUpperCase()} (Anonymous)`, type: 'info', disabled: true });
+            }
+        }
+
+        // 💬 Discord Section
+        const isDiscordExpanded = expanded.has('discord');
+        menuItems.push({
+            name: `${isDiscordExpanded ? '⬇' : '➡'} 💬 Discord Notifications`,
+            type: 'toggle',
+            value: 'discord'
+        });
+        if (isDiscordExpanded) {
+            menuItems.push({
+                name: `  ├─⪢ 🔗 Webhook: ${config.discordWebhook ? 'Set' : 'None'}`,
+                type: 'action',
+                value: 'discord_webhook'
+            });
+            menuItems.push({
+                name: `  └─⪢ 🤖 Download Bot: ${config.discordBotToken ? 'Configured' : 'Not Set'}`,
+                type: 'action',
+                value: 'discord_bot'
+            });
+        }
+
+        // ⚙️ General Section
+        const isGeneralExpanded = expanded.has('general');
+        menuItems.push({
+            name: `${isGeneralExpanded ? '⬇' : '➡'} ⚙️  General Settings`,
+            type: 'toggle',
+            value: 'general'
+        });
+        if (isGeneralExpanded) {
+            menuItems.push({
+                name: `  └─⪢ ⏱️ Check Interval: ${config.checkInterval} mins`,
+                type: 'action',
+                value: 'check_interval'
+            });
+        }
+
+        menuItems.push({ name: '  -------------------------------', type: 'separator', disabled: true });
+        menuItems.push({ name: '  💾 Save and Exit', type: 'action', value: 'save' });
+        menuItems.push({ name: '  ❌ Cancel', type: 'action', value: 'cancel' });
+
+        // Print menu
+        menuItems.forEach((item, index) => {
+            if (index === selectedIndex) {
+                console.log(`\x1b[47m\x1b[30m ${item.name} \x1b[0m`);
+            } else {
+                console.log(` ${item.name}`);
+            }
+        });
+
+        console.log('\nUse arrows to navigate (←/→ to toggle, ↑/↓ to move) • Enter to select \n');
+    };
+
+    render();
+
+    return new Promise((resolve) => {
+        const onKeypress = async (str, key) => {
+            if (!key) return;
+
+            // Ensure index is within bounds (in case items changed)
+            if (selectedIndex >= menuItems.length) selectedIndex = menuItems.length - 1;
+
+            if (key.ctrl && key.name === 'c') {
+                process.stdin.removeListener('keypress', onKeypress);
+                if (process.stdin.isTTY) process.stdin.setRawMode(false);
+                process.exit(0);
+            }
+
+            if (key.name === 'up') {
+                selectedIndex = (selectedIndex - 1 + menuItems.length) % menuItems.length;
+                render();
+            } else if (key.name === 'down') {
+                selectedIndex = (selectedIndex + 1) % menuItems.length;
+                render();
+            } else if (key.name === 'right') {
+                const item = menuItems[selectedIndex];
+                if (item && item.type === 'toggle' && !expanded.has(item.value)) {
+                    expanded.add(item.value);
+                    render();
+                }
+            } else if (key.name === 'left') {
+                const item = menuItems[selectedIndex];
+                if (item && item.type === 'toggle' && expanded.has(item.value)) {
+                    expanded.delete(item.value);
+                    render();
+                }
+            } else if (key.name === 'return') {
+                const item = menuItems[selectedIndex];
+                if (!item || item.disabled) return;
+
+                if (item.type === 'toggle') {
+                    if (expanded.has(item.value)) expanded.delete(item.value);
+                    else expanded.add(item.value);
+                    render();
+                } else if (item.type === 'action') {
+                    // Pause custom loop for data entry
+                    process.stdin.removeListener('keypress', onKeypress);
+                    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+
+                    try {
+                        switch (item.value) {
+                            case 'cloud_service':
+                                await configureCloudService(config);
+                                break;
+                            case 'buzz_account':
+                                await configureBuzzAccount(config);
+                                break;
+                            case 'discord_webhook':
+                                config.discordWebhook = await input({
+                                    message: 'Enter Discord Webhook URL (Leave empty to disable):',
+                                    default: config.discordWebhook || ''
+                                }) || null;
+                                break;
+                            case 'discord_bot':
+                                await configureDiscordBot(config);
+                                break;
+                            case 'check_interval':
+                                config.checkInterval = await number({
+                                    message: 'Check interval (minutes):',
+                                    default: config.checkInterval || 5,
+                                    validate: (value) => (value && value > 0)
+                                        ? true
+                                        : 'Please enter a valid number greater than 0.'
+                                });
+                                break;
+                            case 'save':
+                                resolve(config);
+                                return; // Promise resolved, stop this instance
+                            case 'cancel':
+                                resolve(currentConfig);
+                                return; // Promise resolved, stop this instance
+                        }
+                    } catch (e) {
+                        // Handle potential Inquirer errors (e.g. forced close)
+                    } finally {
+                        // ALWAYS resume custom loop
+                        if (process.stdin.isTTY) {
+                            process.stdin.setRawMode(true);
+                            process.stdin.resume(); // Keep stream flowing
+                        }
+                        process.stdin.on('keypress', onKeypress);
+                        render();
+                    }
+                }
+            }
+        };
+
+        process.stdin.on('keypress', onKeypress);
+    });
+}
+
+export async function configureCloudService(config) {
+    const service = await select({
+        message: 'Select Cloud Service:',
+        choices: [
+            { name: 'Rootz.so (Anonymous)', value: 'rootz' },
+            { name: 'Buzzheavier (General)', value: 'buzzheavier' }
+        ]
+    });
+
+    if (service === 'rootz') {
+        config.cloudService = 'rootz';
+        config.rootz = {};
+    } else {
+        config.cloudService = 'buzzheavier';
+        if (!config.buzzheavier) config.buzzheavier = { anonymous: true };
+    }
+}
+
+export async function configureBuzzAccount(config) {
+    const mode = await select({
+        message: 'Account Mode:',
+        choices: [
+            { name: 'Anonymous', value: 'anon' },
+            { name: 'Authenticated', value: 'auth' }
+        ]
+    });
+
+    if (mode === 'anon') {
+        config.buzzheavier = { anonymous: true };
+    } else {
+        const accountId = await input({
+            message: 'Enter Buzzheavier Account ID:',
+            default: config.buzzheavier?.accountId || '',
+            validate: (value) => value ? true : 'Account ID cannot be empty.'
+        });
+        config.buzzheavier = { accountId, anonymous: false };
+    }
+}
+
+export async function configureDiscordBot(config) {
+    config.discordBotToken = await input({
+        message: 'Enter Discord Bot Token:',
+        default: config.discordBotToken || '',
+        validate: (value) => value ? true : 'Token cannot be empty.'
+    });
+    config.discordChannelId = await input({
+        message: 'Enter Discord Channel ID:',
+        default: config.discordChannelId || '',
+        validate: (value) => value ? true : 'Channel ID cannot be empty.'
+    });
 }
