@@ -45,6 +45,19 @@ class FactorioBackup {
         }
     }
 
+    formatBackupName(originalName) {
+        const timestamp = new Date().toISOString()
+            .replace(/T/, '_')      // Replace T with _
+            .replace(/\..+/, '')   // Remove milliseconds
+            .replace(/:/g, '')     // Remove colons
+            .replace(/-/g, '');    // Remove dashes
+
+        const baseName = originalName.replace(/\.zip$/i, '');
+        const prefix = this.config.backupPrefix ? this.config.backupPrefix.replace(/[^a-zA-Z0-9_-]/g, '_') + '_' : '';
+
+        return `${prefix}${baseName}_${timestamp}.zip`;
+    }
+
     async getLatestSave() {
         const saveDir = this.savePath;
         try {
@@ -116,7 +129,8 @@ class FactorioBackup {
 
             if (this.lastHash !== currentHash) {
                 this.logToFile(`Change detected in: ${save.name}`);
-                const downloadUrl = await this.uploadToCloud(save.path, save.name);
+                const formattedName = this.formatBackupName(save.name);
+                const downloadUrl = await this.uploadToCloud(save.path, formattedName);
 
                 if (downloadUrl) {
                     this.lastLink = downloadUrl;
@@ -126,7 +140,7 @@ class FactorioBackup {
                     if (this.config.discordWebhook) {
                         await sendNotification(
                             this.config.discordWebhook,
-                            save.name,
+                            formattedName,
                             downloadUrl,
                             this.config.cloudService.charAt(0).toUpperCase() + this.config.cloudService.slice(1)
                         );
@@ -231,7 +245,9 @@ class FactorioBackup {
                 const isGeneralExpanded = expanded.has('config_general');
                 menuItems.push({ label: `  └──${isGeneralExpanded ? '⬇' : '➡'} ⚙️  General Settings`, value: 'toggle_config_general', type: 'toggle', node: 'config_general' });
                 if (isGeneralExpanded) {
-                    menuItems.push({ label: `     └─⪢ ⏱️  Check Interval: ${this.config.checkInterval} mins`, value: 'conf_check_interval', type: 'action' });
+                    menuItems.push({ label: `     ├─⪢ ⏱️  Check Interval: ${this.config.checkInterval} mins`, value: 'conf_check_interval', type: 'action' });
+                    menuItems.push({ label: `     ├─⪢ 🏷️  Backup Prefix: ${this.config.backupPrefix || 'None'}`, value: 'conf_backup_prefix', type: 'action' });
+                    menuItems.push({ label: `     └─⪢ 🔒 Obfuscate Secrets: ${this.config.obfuscateSecrets ? 'Enabled' : 'Disabled'}`, value: 'conf_obfuscate_secrets', type: 'action' });
                 }
             }
 
@@ -354,6 +370,17 @@ class FactorioBackup {
                                     });
                                     configChanged = true;
                                     break;
+                                case 'conf_backup_prefix':
+                                    this.config.backupPrefix = await input({
+                                        message: 'Enter Backup Prefix (Leave empty for none):',
+                                        default: this.config.backupPrefix || ''
+                                    }) || null;
+                                    configChanged = true;
+                                    break;
+                                case 'conf_obfuscate_secrets':
+                                    this.config.obfuscateSecrets = !this.config.obfuscateSecrets;
+                                    configChanged = true;
+                                    break;
                                 case 'exit':
                                     console.log('Goodbye!');
                                     process.exit(0);
@@ -448,13 +475,14 @@ class FactorioBackup {
 
             if (selectedFile !== 'cancel') {
                 const filePath = path.join(this.savePath, selectedFile);
+                const formattedName = this.formatBackupName(selectedFile);
 
-                const downloadUrl = await this.uploadToCloud(filePath, selectedFile);
+                const downloadUrl = await this.uploadToCloud(filePath, formattedName);
 
                 if (downloadUrl && this.config.discordWebhook) {
                     await sendNotification(
                         this.config.discordWebhook,
-                        selectedFile,
+                        formattedName,
                         downloadUrl,
                         this.config.cloudService.charAt(0).toUpperCase() + this.config.cloudService.slice(1)
                     );
@@ -477,7 +505,9 @@ class FactorioBackup {
             console.log(`│ File Name   │ ${latest.fileName.padEnd(47).substring(0, 47)} │`);
             console.log(`│ Date        │ ${dateStr.padEnd(47).substring(0, 47)} │`);
             console.log(`│ Source      │ Discord Bot                                     │`);
-            console.log(`└─────────────┴─────────────────────────────────────────────────┘`);
+            console.log(`├─────────────┴─────────────────────────────────────────────────┤`);
+            console.log(`│ Link: ${latest.url}`);
+            console.log(`└───────────────────────────────────────────────────────────────┘`);
 
             const confirm = await select({
                 message: 'Do you want to download this file?',

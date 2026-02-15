@@ -3,8 +3,33 @@ import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { select, input, number } from '@inquirer/prompts';
+import crypto from 'crypto';
 
 const CONFIG_FILE = 'config.json';
+const SECRET_PREFIX = 'obf:';
+const SECRET_KEY = 'factorio-backup-secret-key'; // Fixed key for simplicity in this tool
+
+// Simple obfuscation (not military grade, just to hide from plain view)
+function obfuscate(value) {
+    if (!value || value.startsWith(SECRET_PREFIX)) return value;
+    const cipher = crypto.createCipheriv('aes-256-cbc', crypto.scryptSync(SECRET_KEY, 'salt', 32), Buffer.alloc(16, 0));
+    let encrypted = cipher.update(value, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return SECRET_PREFIX + encrypted;
+}
+
+function deobfuscate(value) {
+    if (!value || !value.startsWith(SECRET_PREFIX)) return value;
+    try {
+        const encrypted = value.substring(SECRET_PREFIX.length);
+        const decipher = crypto.createDecipheriv('aes-256-cbc', crypto.scryptSync(SECRET_KEY, 'salt', 32), Buffer.alloc(16, 0));
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        return value; // Return as is if decryption fails
+    }
+}
 
 // Helper function to find the correct save path
 export function getSavePath() {
@@ -37,7 +62,16 @@ export async function loadConfig() {
     try {
         if (existsSync(CONFIG_FILE)) {
             const data = await fs.readFile(CONFIG_FILE, 'utf-8');
-            return JSON.parse(data);
+            const config = JSON.parse(data);
+
+            // Auto-deobfuscate known secrets
+            if (config.discordWebhook) config.discordWebhook = deobfuscate(config.discordWebhook);
+            if (config.discordBotToken) config.discordBotToken = deobfuscate(config.discordBotToken);
+            if (config.buzzheavier && config.buzzheavier.accountId) {
+                config.buzzheavier.accountId = deobfuscate(config.buzzheavier.accountId);
+            }
+
+            return config;
         }
     } catch (e) {
         console.error('Error loading config, starting setup...');
@@ -47,8 +81,18 @@ export async function loadConfig() {
 
 export async function saveConfig(config) {
     try {
-        await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
-        console.log(`Configuration saved to ${CONFIG_FILE}`);
+        let configToSave = JSON.parse(JSON.stringify(config)); // Deep clone
+
+        if (config.obfuscateSecrets) {
+            if (configToSave.discordWebhook) configToSave.discordWebhook = obfuscate(configToSave.discordWebhook);
+            if (configToSave.discordBotToken) configToSave.discordBotToken = obfuscate(configToSave.discordBotToken);
+            if (configToSave.buzzheavier && configToSave.buzzheavier.accountId) {
+                configToSave.buzzheavier.accountId = obfuscate(configToSave.buzzheavier.accountId);
+            }
+        }
+
+        await fs.writeFile(CONFIG_FILE, JSON.stringify(configToSave, null, 2));
+        console.log(`Configuration saved to ${CONFIG_FILE} (Obfuscation: ${config.obfuscateSecrets ? 'ON' : 'OFF'})`);
     } catch (e) {
         console.error('Error saving config:', e);
     }
@@ -66,7 +110,8 @@ export async function runInteractiveSetup(currentConfig = null) {
         discordBotToken: null,
         discordChannelId: null,
         buzzheavier: { anonymous: true },
-        rootz: {}
+        rootz: {},
+        backupPrefix: null
     };
 
     const expanded = new Set();
@@ -135,9 +180,19 @@ export async function runInteractiveSetup(currentConfig = null) {
         });
         if (isGeneralExpanded) {
             menuItems.push({
-                name: `  └─⪢ ⏱️ Check Interval: ${config.checkInterval} mins`,
+                name: `     ├─⪢ ⏱️ Check Interval: ${config.checkInterval} mins`,
                 type: 'action',
                 value: 'check_interval'
+            });
+            menuItems.push({
+                name: `     ├─⪢ 🏷️ Backup Prefix: ${config.backupPrefix || 'None (Original Name)'}`,
+                type: 'action',
+                value: 'backup_prefix'
+            });
+            menuItems.push({
+                name: `     └─⪢ 🔒 Obfuscate Secrets: ${config.obfuscateSecrets ? 'Enabled' : 'Disabled'}`,
+                type: 'action',
+                value: 'toggle_obfuscation'
             });
         }
 
@@ -228,6 +283,15 @@ export async function runInteractiveSetup(currentConfig = null) {
                                         ? true
                                         : 'Please enter a valid number greater than 0.'
                                 });
+                                break;
+                            case 'backup_prefix':
+                                config.backupPrefix = await input({
+                                    message: 'Enter Backup Prefix (e.g. MegaBase, leave empty for none):',
+                                    default: config.backupPrefix || ''
+                                }) || null;
+                                break;
+                            case 'toggle_obfuscation':
+                                config.obfuscateSecrets = !config.obfuscateSecrets;
                                 break;
                             case 'save':
                                 resolve(config);

@@ -1,6 +1,7 @@
 # Configuration and Secrets
 config.json
 .env
+factorio-backup.log
 
 # Dependencies
 node_modules/
