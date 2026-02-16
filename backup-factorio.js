@@ -52,10 +52,25 @@ class FactorioBackup {
             .replace(/:/g, '')     // Remove colons
             .replace(/-/g, '');    // Remove dashes
 
-        const baseName = originalName.replace(/\.zip$/i, '');
-        const prefix = this.config.backupPrefix ? this.config.backupPrefix.replace(/[^a-zA-Z0-9_-]/g, '_') + '_' : '';
+        let baseName = originalName.replace(/\.zip$/i, '');
 
-        return `${prefix}${baseName}_${timestamp}.zip`;
+        // Remove existing timestamp pattern (_YYYYMMDD_HHMMSS)
+        baseName = baseName.replace(/_\d{8}_\d{6}$/, '');
+
+        const prefixStr = this.config.backupPrefix ? this.config.backupPrefix.replace(/[^a-zA-Z0-9_-]/g, '_') : '';
+
+        // Remove ANY existing prefix (anything before the first underscore if it's not part of the original name)
+        // Note: Factorio saves usually don't start with "Prefix_", but we'll be targeted:
+        // If there's an underscore and the part before it isn't an "autosave" or similar common save pattern
+        const parts = baseName.split('_');
+        if (parts.length > 1 && !baseName.startsWith('_autosave')) {
+            // If the first part looks like a generated prefix (alphanumeric/dashes/underscores)
+            // and we have more parts, we strip it.
+            baseName = parts.slice(1).join('_');
+        }
+
+        const finalPrefix = prefixStr ? prefixStr + '_' : '';
+        return `${finalPrefix}${baseName}_${timestamp}.zip`;
     }
 
     async getLatestSave() {
@@ -390,8 +405,11 @@ class FactorioBackup {
                                 await saveConfig(this.config);
                                 startAutoBackup();
                             }
-
-                            let countdown = (item.value === 'view_log') ? -1 : 3;
+                        } catch (e) {
+                            console.error(`\n❌ Error: ${e.message}`);
+                        } finally {
+                            // Ensure the user always sees the prompt to return to the menu
+                            let countdown = (item.value === 'view_log') ? -1 : 5;
                             const returnMsg = () => {
                                 if (countdown > 0) {
                                     process.stdout.write(`\rPress any key to return to monitor... (Auto-return in ${countdown}s) `);
@@ -426,9 +444,7 @@ class FactorioBackup {
 
                             await returnPromise;
                             process.stdout.write('\n');
-                        } catch (e) {
-                            // Handle potential errors (e.g. exit prompts)
-                        } finally {
+
                             // Resume main listener
                             if (process.stdin.isTTY) {
                                 process.stdin.setRawMode(true);
@@ -528,15 +544,21 @@ class FactorioBackup {
                 console.log(`📥 Downloading ${latest.fileName} to saves folder...`);
 
                 const response = await fetch(directUrl);
-                if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
 
                 // Safety check: ensure we are not downloading an HTML error page
                 const contentType = response.headers.get('content-type');
                 if (contentType && contentType.includes('text/html')) {
-                    throw new Error('The resolved link points to an HTML page instead of a file. The resolver may have failed.');
+                    const errorText = await response.text();
+                    if (errorText.includes('Currently receiving high amount of requests')) {
+                        throw new Error('Rootz is currently overloaded. Wait a few seconds and try downloading again.');
+                    }
+                    throw new Error('The resolved link points to an HTML page instead of a file. The cloud service might be blocking the request or rate-limiting.');
                 }
 
-                // Use Bun.write for efficient file writing
+                if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+
+                console.log(`📥 Downloading ${latest.fileName} to saves folder...`);
+
                 await Bun.write(targetPath, response);
 
                 const finalSize = statSync(targetPath).size;
