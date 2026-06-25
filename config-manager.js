@@ -33,6 +33,10 @@ function deobfuscate(value) {
 
 // Helper function to find the correct save path
 export function getSavePath() {
+    if (process.env.FACTORIO_SAVES_PATH) {
+        return path.resolve(process.env.FACTORIO_SAVES_PATH);
+    }
+
     const platform = os.platform();
     const homeDir = os.homedir();
 
@@ -67,8 +71,8 @@ export async function loadConfig() {
             // Auto-deobfuscate known secrets
             if (config.discordWebhook) config.discordWebhook = deobfuscate(config.discordWebhook);
             if (config.discordBotToken) config.discordBotToken = deobfuscate(config.discordBotToken);
-            if (config.buzzheavier && config.buzzheavier.accountId) {
-                config.buzzheavier.accountId = deobfuscate(config.buzzheavier.accountId);
+            if (config.googleDrive && config.googleDrive.credentialsPath) {
+                config.googleDrive.credentialsPath = deobfuscate(config.googleDrive.credentialsPath);
             }
 
             return config;
@@ -86,8 +90,8 @@ export async function saveConfig(config) {
         if (config.obfuscateSecrets) {
             if (configToSave.discordWebhook) configToSave.discordWebhook = obfuscate(configToSave.discordWebhook);
             if (configToSave.discordBotToken) configToSave.discordBotToken = obfuscate(configToSave.discordBotToken);
-            if (configToSave.buzzheavier && configToSave.buzzheavier.accountId) {
-                configToSave.buzzheavier.accountId = obfuscate(configToSave.buzzheavier.accountId);
+            if (configToSave.googleDrive && configToSave.googleDrive.credentialsPath) {
+                configToSave.googleDrive.credentialsPath = obfuscate(configToSave.googleDrive.credentialsPath);
             }
         }
 
@@ -104,13 +108,12 @@ export async function runInteractiveSetup(currentConfig = null) {
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
     let config = currentConfig || {
-        cloudService: 'rootz',
+        cloudService: 'google-drive',
         checkInterval: 5,
         discordWebhook: null,
         discordBotToken: null,
         discordChannelId: null,
-        buzzheavier: { anonymous: true },
-        rootz: {},
+        googleDrive: { credentialsPath: './credentials.json', folderId: null },
         backupPrefix: null
     };
 
@@ -140,14 +143,14 @@ export async function runInteractiveSetup(currentConfig = null) {
         });
         if (isCloudExpanded) {
             menuItems.push({ name: `  ├─⪢ ☁️ Select Service`, type: 'action', value: 'cloud_service' });
-            if (config.cloudService === 'buzzheavier') {
+            if (config.cloudService === 'google-drive') {
                 menuItems.push({
-                    name: `  └─ 👤 Buzzheavier Account: ${config.buzzheavier.anonymous ? 'Anonymous' : config.buzzheavier.accountId}`,
+                    name: `  └─ 🔑 GDrive Credentials: ${config.googleDrive?.credentialsPath || 'Not Set'}`,
                     type: 'action',
-                    value: 'buzz_account'
+                    value: 'gdrive_credentials'
                 });
             } else {
-                menuItems.push({ name: `  └─ ${config.cloudService.toUpperCase()} (Anonymous)`, type: 'info', disabled: true });
+                menuItems.push({ name: `  └─ ${config.cloudService.toUpperCase()}`, type: 'info', disabled: true });
             }
         }
 
@@ -263,8 +266,8 @@ export async function runInteractiveSetup(currentConfig = null) {
                             case 'cloud_service':
                                 await configureCloudService(config);
                                 break;
-                            case 'buzz_account':
-                                await configureBuzzAccount(config);
+                            case 'gdrive_credentials':
+                                await configureGoogleDriveCredentials(config);
                                 break;
                             case 'discord_webhook':
                                 config.discordWebhook = await input({
@@ -323,38 +326,50 @@ export async function configureCloudService(config) {
     const service = await select({
         message: 'Select Cloud Service:',
         choices: [
-            { name: 'Rootz.so (Anonymous)', value: 'rootz' },
-            { name: 'Buzzheavier (General)', value: 'buzzheavier' }
+            { name: 'Google Drive', value: 'google-drive' }
         ]
     });
 
-    if (service === 'rootz') {
-        config.cloudService = 'rootz';
-        config.rootz = {};
-    } else {
-        config.cloudService = 'buzzheavier';
-        if (!config.buzzheavier) config.buzzheavier = { anonymous: true };
+    if (service === 'google-drive') {
+        config.cloudService = 'google-drive';
+        if (!config.googleDrive) config.googleDrive = { credentialsPath: './credentials.json' };
     }
 }
 
-export async function configureBuzzAccount(config) {
-    const mode = await select({
-        message: 'Account Mode:',
-        choices: [
-            { name: 'Anonymous', value: 'anon' },
-            { name: 'Authenticated', value: 'auth' }
-        ]
-    });
+export async function configureGoogleDriveCredentials(config) {
+    const { isAuthorized, authorizeWithLocalServer } = await import('./services/google-drive.js');
 
-    if (mode === 'anon') {
-        config.buzzheavier = { anonymous: true };
-    } else {
-        const accountId = await input({
-            message: 'Enter Buzzheavier Account ID:',
-            default: config.buzzheavier?.accountId || '',
-            validate: (value) => value ? true : 'Account ID cannot be empty.'
+    const credentialsPath = await input({
+        message: 'Enter path to OAuth2 credentials.json:',
+        default: config.googleDrive?.credentialsPath || './credentials.json',
+        validate: (value) => value ? true : 'Credentials path cannot be empty.'
+    });
+    const folderId = await input({
+        message: 'Enter Google Drive Folder ID (Leave empty to upload to root):',
+        default: config.googleDrive?.folderId || ''
+    }) || null;
+    config.googleDrive = { credentialsPath, folderId };
+
+    // Check if already authorized
+    if (isAuthorized()) {
+        console.log('\n✅ Google Drive is already authorized.');
+        const reAuth = await select({
+            message: 'Do you want to re-authorize?',
+            choices: [
+                { name: 'No, keep current authorization', value: false },
+                { name: 'Yes, re-authorize', value: true }
+            ]
         });
-        config.buzzheavier = { accountId, anonymous: false };
+        if (!reAuth) return;
+    }
+
+    // Start OAuth2 flow with local server
+    try {
+        await authorizeWithLocalServer(credentialsPath);
+        console.log('\n🎉 Google Drive authorized successfully! Your backups will upload to your personal Drive.');
+    } catch (err) {
+        console.error(`\n❌ Authorization failed: ${err.message}`);
+        console.error('Make sure you downloaded "OAuth 2.0 Client ID" (Desktop app) credentials, NOT a Service Account key.');
     }
 }
 

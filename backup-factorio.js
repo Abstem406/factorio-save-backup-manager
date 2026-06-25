@@ -3,25 +3,13 @@
 import { promises as fs, statSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { getSavePath, loadConfig, saveConfig, runInteractiveSetup, configureCloudService, configureBuzzAccount, configureDiscordBot } from './config-manager.js';
+import { getSavePath, loadConfig, saveConfig, runInteractiveSetup, configureCloudService, configureGoogleDriveCredentials, configureDiscordBot } from './config-manager.js';
 import { select, input, number } from '@inquirer/prompts';
 
 // Explicit imports
-import { upload as uploadToBuzzheavier } from './services/buzzheavier.js';
-import { upload as uploadToRootz } from './services/rootz.js';
+import { uploadToGoogleDrive } from './services/google-drive.js';
 import { sendNotification, getLatestBackupUrl } from './services/discord.js';
 import { resolveDirectLink } from './services/resolver.js';
-
-// Global service endpoints (API keys are now dynamic in config)
-const SERVICES_CONSTANTS = {
-    buzzheavier: {
-        endpoint: 'https://w.buzzheavier.com'
-    },
-    rootz: {
-        endpoint: 'https://www.rootz.so',
-        multipartThreshold: 4 * 1024 * 1024 // 4MB
-    }
-};
 
 class FactorioBackup {
     constructor(config) {
@@ -103,33 +91,16 @@ class FactorioBackup {
             const arrayBuffer = await file.arrayBuffer();
             return crypto.createHash('md5').update(new Uint8Array(arrayBuffer)).digest('hex');
         } catch (e) {
-            const fileBuffer = await fs.readFile(filePath);
-            return crypto.createHash('md5').update(fileBuffer).digest('hex');
+            console.error('Error calculating hash:', e.message);
+            return null;
         }
     }
 
     async uploadToCloud(filePath, fileName) {
-        if (this.config.cloudService === 'rootz') {
-            const rootzConfig = {
-                ...SERVICES_CONSTANTS.rootz,
-                ...this.config.rootz // Merge user config if any
-            };
-            console.log(`Uploading ${fileName} to Rootz.so...`);
-            return await uploadToRootz(filePath, fileName, rootzConfig);
-
-        } else if (this.config.cloudService === 'buzzheavier') {
-            const buzzConfig = {
-                ...SERVICES_CONSTANTS.buzzheavier,
-                ...this.config.buzzheavier
-            };
-
-            if (!buzzConfig.anonymous && !buzzConfig.accountId) {
-                console.error('Error: Buzzheavier Account ID is missing in config.');
-                return;
-            }
-
-            console.log(`Uploading ${fileName} to Buzzheavier...`);
-            return await uploadToBuzzheavier(filePath, fileName, buzzConfig);
+        if (this.config.cloudService === 'google-drive') {
+            const credentialsPath = this.config.googleDrive?.credentialsPath || './credentials.json';
+            const folderId = this.config.googleDrive?.folderId || null;
+            return await uploadToGoogleDrive(filePath, fileName, credentialsPath, folderId);
         } else {
             console.warn(`Service ${this.config.cloudService} not implemented or supported.`);
         }
@@ -231,6 +202,7 @@ class FactorioBackup {
                     type: 'action',
                     disabled: !(this.config.discordBotToken && this.config.discordChannelId)
                 });
+                menuItems.push({ label: `  ├─⪢ 🧪 Generate Test Save File`, value: 'generate_test_file', type: 'action' });
                 menuItems.push({ label: `  └─⪢ 📋 View Monitor Log`, value: 'view_log', type: 'action' });
             }
 
@@ -243,8 +215,8 @@ class FactorioBackup {
                 menuItems.push({ label: `  ├──${isCloudExpanded ? '⬇' : '➡'} 🌐 Cloud Service (${this.config.cloudService.toUpperCase()})`, value: 'toggle_config_cloud', type: 'toggle', node: 'config_cloud' });
                 if (isCloudExpanded) {
                     menuItems.push({ label: `  │  └─⪢ ☁️  Select Service`, value: 'conf_cloud_service', type: 'action' });
-                    if (this.config.cloudService === 'buzzheavier') {
-                        menuItems.push({ label: `  │  └─⪢ 👤 Buzzheavier Account`, value: 'conf_buzz_account', type: 'action' });
+                    if (this.config.cloudService === 'google-drive') {
+                        menuItems.push({ label: `  │  └─⪢ 🔑 GDrive Credentials`, value: 'conf_gdrive_credentials', type: 'action' });
                     }
                 }
 
@@ -348,6 +320,22 @@ class FactorioBackup {
                                 case 'download':
                                     await this.downloadLatestFromDiscord();
                                     break;
+                                case 'generate_test_file':
+                                    console.log('\nGenerating test save file...');
+                                    try {
+                                        // fs is imported as "promises as fs", but fs.existsSync requires standard fs.
+                                        // Wait, the import says "import { promises as fs, statSync } from 'fs';"
+                                        // Let's use statSync or just mkdir with recursive to be safe.
+                                        await fs.mkdir(this.savePath, { recursive: true });
+                                        const testName = `_autosave-test_${Date.now()}.zip`;
+                                        const dummyContent = `This is a test file generated at ${new Date().toLocaleString()}`;
+                                        await Bun.write(path.join(this.savePath, testName), dummyContent);
+                                        console.log(`✅ Test file created: ${testName}`);
+                                        console.log('It will be picked up on the next check or you can force a check now.');
+                                    } catch (err) {
+                                        console.error('❌ Error creating test file:', err.message);
+                                    }
+                                    break;
                                 case 'view_log':
                                     console.log('\n--- Monitor Log (Last 20 lines) ---');
                                     try {
@@ -362,8 +350,8 @@ class FactorioBackup {
                                     await configureCloudService(this.config);
                                     configChanged = true;
                                     break;
-                                case 'conf_buzz_account':
-                                    await configureBuzzAccount(this.config);
+                                case 'conf_gdrive_credentials':
+                                    await configureGoogleDriveCredentials(this.config);
                                     configChanged = true;
                                     break;
                                 case 'conf_discord_webhook':
@@ -577,6 +565,10 @@ async function main() {
 
     if (!config) {
         config = await runInteractiveSetup();
+        if (!config) {
+            console.log('Setup cancelled. Exiting...');
+            process.exit(0);
+        }
         await saveConfig(config);
     } else {
         console.log('Configuration loaded from config.json');

@@ -1,10 +1,14 @@
 {
+  "name": "factorio-save-backup-manager",
+  "version": "1.0.0",
+  "main": "backup-factorio.js",
   "scripts": {
     "build:win": "bun build ./backup-factorio.js --compile --target=bun-windows-x64 --outfile=dist/factorio-backup-win",
     "build:win:icon": "bun build ./backup-factorio.js --compile --target=bun-windows-x64 --windows-icon=icon.ico --outfile=dist/factorio-backup-win",
     "build:linux": "bun build ./backup-factorio.js --compile --target=bun-linux-x64 --outfile=dist/factorio-backup-linux"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.2.0"
+    "@inquirer/prompts": "^8.5.2",
+    "googleapis": "^140.0.1"
   }
 }
