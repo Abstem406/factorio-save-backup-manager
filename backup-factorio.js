@@ -7,7 +7,7 @@ import { getSavePath, loadConfig, saveConfig, runInteractiveSetup, configureClou
 import { select, input, number } from '@inquirer/prompts';
 
 // Explicit imports
-import { uploadToGoogleDrive } from './services/google-drive.js';
+import { uploadToGoogleDrive, listFilesFromGoogleDrive, downloadFromGoogleDrive } from './services/google-drive.js';
 import { sendNotification, getLatestBackupUrl } from './services/discord.js';
 import { resolveDirectLink } from './services/resolver.js';
 
@@ -143,6 +143,134 @@ class FactorioBackup {
         }
     }
 
+    async createLocalBackup(filePath) {
+        try {
+            const backupsDir = path.join(process.cwd(), 'backups');
+            await fs.mkdir(backupsDir, { recursive: true });
+            
+            const fileName = path.basename(filePath);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupName = `${fileName.replace('.zip', '')}_localbackup_${timestamp}.zip`;
+            const backupPath = path.join(backupsDir, backupName);
+            
+            await fs.copyFile(filePath, backupPath);
+            this.logToFile(`Local backup created: ${backupPath}`);
+            console.log(`\n💾 Local backup created at: backups/${backupName}`);
+            
+            // Limit to 5 backups
+            const files = await fs.readdir(backupsDir);
+            const backupFiles = files.filter(f => f.includes('_localbackup_')).sort((a, b) => {
+                return statSync(path.join(backupsDir, b)).mtime.getTime() - statSync(path.join(backupsDir, a)).mtime.getTime();
+            });
+            
+            if (backupFiles.length > 5) {
+                const toDelete = backupFiles.slice(5);
+                for (const file of toDelete) {
+                    await fs.unlink(path.join(backupsDir, file));
+                }
+            }
+        } catch (error) {
+            console.error('Error creating local backup:', error.message);
+        }
+    }
+
+    async syncFromCloud() {
+        if (this.config.cloudService !== 'google-drive') return;
+        
+        console.log('\n🔄 Checking cloud for newer saves...');
+        try {
+            const credentialsPath = this.config.googleDrive?.credentialsPath || './credentials.json';
+            const folderId = this.config.googleDrive?.folderId || null;
+            
+            const cloudFiles = await listFilesFromGoogleDrive(credentialsPath, folderId);
+            if (cloudFiles.length === 0) {
+                console.log('☁️ No saves found in the cloud.');
+                return;
+            }
+            
+            const latestCloudSave = cloudFiles[0];
+            const cloudTime = new Date(latestCloudSave.modifiedTime).getTime();
+            
+            const localSave = await this.getLatestSave();
+            let localTime = 0;
+            if (localSave) {
+                localTime = statSync(localSave.path).mtime.getTime();
+            }
+            
+            if (cloudTime > localTime) {
+                console.log(`\n⚠️  A newer save was found in the cloud!`);
+                console.log(`   Cloud: ${latestCloudSave.name} (${new Date(cloudTime).toLocaleString()})`);
+                if (localSave) {
+                    console.log(`   Local: ${localSave.name} (${new Date(localTime).toLocaleString()})`);
+                }
+                
+                console.log(`\n🔄 Forcing synchronization to prevent desyncs...`);
+                if (localSave) {
+                    await this.createLocalBackup(localSave.path);
+                }
+                
+                const targetPath = path.join(this.savePath, latestCloudSave.name);
+                console.log(`📥 Downloading ${latestCloudSave.name} from Google Drive...`);
+                
+                await downloadFromGoogleDrive(credentialsPath, latestCloudSave.id, targetPath);
+                console.log(`✅ Sync complete! Downloaded to ${targetPath}`);
+                this.logToFile(`Cloud sync downloaded: ${latestCloudSave.name}`);
+                
+                // Update baseline so we don't immediately re-upload
+                this.startTime = Date.now();
+                this.lastHash = await this.calculateHash(targetPath);
+            } else {
+                console.log('✅ Local save is up to date.');
+            }
+        } catch (error) {
+            console.error('Error syncing from cloud:', error.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    async downloadLatestFromGDrive() {
+        if (this.config.cloudService !== 'google-drive') return;
+        console.log('\n--- Download Backup from Google Drive ---');
+        try {
+            const credentialsPath = this.config.googleDrive?.credentialsPath || './credentials.json';
+            const folderId = this.config.googleDrive?.folderId || null;
+            const cloudFiles = await listFilesFromGoogleDrive(credentialsPath, folderId);
+            
+            if (cloudFiles.length === 0) {
+                console.log('☁️ No saves found in the cloud.');
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                return;
+            }
+            
+            const choices = cloudFiles.slice(0, 10).map(file => ({
+                name: `${file.name} (${new Date(file.modifiedTime).toLocaleString()}) - ${(file.size / 1024 / 1024).toFixed(2)} MB`,
+                value: file
+            }));
+            choices.push({ name: 'Cancel', value: null });
+            
+            const selected = await select({
+                message: 'Select a save to download:',
+                choices
+            });
+            
+            if (selected) {
+                const localSave = await this.getLatestSave();
+                if (localSave) {
+                    await this.createLocalBackup(localSave.path);
+                }
+                const targetPath = path.join(this.savePath, selected.name);
+                console.log(`📥 Downloading ${selected.name}...`);
+                await downloadFromGoogleDrive(credentialsPath, selected.id, targetPath);
+                console.log(`✅ Download complete! Saved to ${targetPath}`);
+                this.startTime = Date.now();
+                this.lastHash = await this.calculateHash(targetPath);
+            }
+        } catch (e) {
+            console.error('Error:', e.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
     async monitor() {
         const readline = await import('readline');
         readline.emitKeypressEvents(process.stdin);
@@ -161,6 +289,8 @@ class FactorioBackup {
         const expanded = new Set([]);
         let selectedIndex = 0;
         let menuItems = [];
+
+        await this.syncFromCloud();
 
         startAutoBackup();
 
@@ -196,6 +326,9 @@ class FactorioBackup {
             if (isActionsExpanded) {
                 menuItems.push({ label: `  ├─⪢ 🔍 Force Check Now`, value: 'check', type: 'action' });
                 menuItems.push({ label: `  ├─⪢ 📤 Manual Upload`, value: 'upload', type: 'action' });
+                if (this.config.cloudService === 'google-drive') {
+                    menuItems.push({ label: `  ├─⪢ 📥 Download from Google Drive`, value: 'download_gdrive', type: 'action' });
+                }
                 menuItems.push({
                     label: `  ├─⪢ 📥 Download from Discord`,
                     value: 'download',
@@ -316,6 +449,11 @@ class FactorioBackup {
                                     break;
                                 case 'upload':
                                     await this.manualUpload();
+                                    break;
+                                case 'download_gdrive':
+                                    clearInterval(this.monitorInterval);
+                                    await this.downloadLatestFromGDrive();
+                                    startAutoBackup();
                                     break;
                                 case 'download':
                                     await this.downloadLatestFromDiscord();
@@ -438,6 +576,8 @@ class FactorioBackup {
                                 process.stdin.setRawMode(true);
                                 process.stdin.resume();
                             }
+                            const readline = await import('readline');
+                            readline.emitKeypressEvents(process.stdin);
                             process.stdin.on('keypress', onKeypress);
                             countdownTimer = setInterval(() => render(), 1000);
                             render();

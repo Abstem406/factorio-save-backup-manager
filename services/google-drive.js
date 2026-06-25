@@ -11,11 +11,17 @@ const TOKEN_PATH = path.join(process.cwd(), 'gdrive-token.json');
  * This file should be an "OAuth 2.0 Client ID" (Desktop app), NOT a Service Account.
  */
 function loadCredentials(credentialsPath) {
-    if (!fs.existsSync(credentialsPath)) {
-        throw new Error(`Google Drive credentials not found at ${credentialsPath}`);
+    const resolvedPath = path.resolve(process.cwd(), credentialsPath);
+    if (!fs.existsSync(resolvedPath)) {
+        throw new Error(`Google Drive credentials not found at ${resolvedPath}`);
     }
-    const content = fs.readFileSync(credentialsPath, 'utf-8');
-    const keys = JSON.parse(content);
+    const content = fs.readFileSync(resolvedPath, 'utf-8');
+    let keys;
+    try {
+        keys = JSON.parse(content);
+    } catch (e) {
+        throw new Error(`The file at ${resolvedPath} is empty or contains invalid JSON. Please paste valid credentials.`);
+    }
 
     // Support both "installed" (Desktop) and "web" credential formats
     const creds = keys.installed || keys.web;
@@ -41,9 +47,14 @@ export function createOAuth2Client(credentialsPath) {
 
     // Try to load saved tokens
     if (fs.existsSync(TOKEN_PATH)) {
-        const tokenContent = fs.readFileSync(TOKEN_PATH, 'utf-8');
-        const tokens = JSON.parse(tokenContent);
-        oauth2Client.setCredentials(tokens);
+        try {
+            const tokenContent = fs.readFileSync(TOKEN_PATH, 'utf-8');
+            const tokens = JSON.parse(tokenContent);
+            oauth2Client.setCredentials(tokens);
+        } catch (e) {
+            // Ignore corrupted token file, force re-auth
+            fs.unlinkSync(TOKEN_PATH);
+        }
     }
 
     return oauth2Client;
@@ -205,4 +216,63 @@ export async function uploadToGoogleDrive(filePath, fileName, credentialsPath, f
     });
 
     return res.data.webViewLink;
+}
+
+/**
+ * Lists .zip files from a Google Drive folder, sorted by most recent first.
+ */
+export async function listFilesFromGoogleDrive(credentialsPath, folderId) {
+    const oauth2Client = createOAuth2Client(credentialsPath);
+
+    if (!oauth2Client.credentials || !oauth2Client.credentials.refresh_token) {
+        throw new Error(
+            'Google Drive not authorized yet. Go to ⚙️ Settings → 🌐 Cloud Service → 🔑 GDrive Credentials → Authorize to link your account.'
+        );
+    }
+
+    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+    let query = "mimeType='application/zip' and trashed=false";
+    if (folderId) {
+        query += ` and '${folderId}' in parents`;
+    }
+
+    const res = await drive.files.list({
+        q: query,
+        fields: 'files(id, name, modifiedTime, size)',
+        orderBy: 'modifiedTime desc',
+        pageSize: 50,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true
+    });
+
+    return res.data.files || [];
+}
+
+/**
+ * Downloads a file from Google Drive by its ID to a local destination path.
+ */
+export async function downloadFromGoogleDrive(credentialsPath, fileId, destinationPath) {
+    const oauth2Client = createOAuth2Client(credentialsPath);
+
+    if (!oauth2Client.credentials || !oauth2Client.credentials.refresh_token) {
+        throw new Error(
+            'Google Drive not authorized yet. Go to ⚙️ Settings → 🌐 Cloud Service → 🔑 GDrive Credentials → Authorize to link your account.'
+        );
+    }
+
+    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+    const res = await drive.files.get(
+        { fileId, alt: 'media', supportsAllDrives: true },
+        { responseType: 'stream' }
+    );
+
+    return new Promise((resolve, reject) => {
+        const dest = fs.createWriteStream(destinationPath);
+        res.data
+            .on('end', () => resolve(destinationPath))
+            .on('error', (err) => reject(err))
+            .pipe(dest);
+    });
 }

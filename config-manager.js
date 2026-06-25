@@ -342,7 +342,14 @@ export async function configureGoogleDriveCredentials(config) {
     const credentialsPath = await input({
         message: 'Enter path to OAuth2 credentials.json:',
         default: config.googleDrive?.credentialsPath || './credentials.json',
-        validate: (value) => value ? true : 'Credentials path cannot be empty.'
+        validate: (value) => {
+            if (!value) return 'Credentials path cannot be empty.';
+            const resolved = path.resolve(process.cwd(), value);
+            if (!existsSync(resolved)) {
+                return `File not found at: ${resolved}\nDownload it from Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client ID (Desktop app).`;
+            }
+            return true;
+        }
     });
     const folderId = await input({
         message: 'Enter Google Drive Folder ID (Leave empty to upload to root):',
